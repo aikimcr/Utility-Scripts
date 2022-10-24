@@ -1,0 +1,251 @@
+#! /usr/bin/perl
+
+use strict;
+use warnings;
+
+use Data::Dumper;
+use File::Find::Rule;
+use Getopt::Long;
+use File::Spec;
+
+my $home = $ENV{HOME};
+
+my %options = (
+  projectBase => "${home}/git",
+  jsfiles => 1,
+  hbfiles => 0,
+  tmlfiles => 0,
+  scssfiles => 0,
+  phpfiles => 0,
+  tmlfile => 0,
+  pythonfiles => 0,
+  tests => 0,
+  jsonfiles => 0,
+  files_only => 0,
+  find_function => 0,
+  find_callers => 0,
+  wordmatch => 0,
+  help => 0,
+  verbose => 0,
+);
+
+if ($0 =~ /phpfind/) {
+  @options{qw(jsfiles phpfiles projectBase)} = (0, 1, "${home}/git");
+}
+
+GetOptions (
+  'projectBase|base|b=s' => sub {
+    my ($optname, $value) = @_;
+
+    if ($value eq 'all') {
+      $value = "${home}/git";
+    } else {
+      $value = "${home}/${value}";
+    }
+
+    $options{projectBase} = File::Spec->rel2abs($value);
+  },
+  'tests|t!' => \$options{tests},
+  'javascript|js|j!' => \$options{jsfiles},
+  'handlebars|hb|h!' => \$options{hbfiles},
+  'tml!' => \$options{tmlfiles},
+  'scss|s!' => \$options{scssfiles},
+  'php|p!' => \$options{phpfiles},
+  'tml!' => \$options{tmlfiles},
+  'python|py!' => \$options{pythonfiles},
+  'json!' => \$options{jsonfiles},
+  'find_function|function|func|ff|f!' => \$options{find_function},
+  'find_callers|callers|call|fc|c!' => \$options{find_callers},
+  'files_only|files|fi!' => \$options{files_only},
+  'wordmatch|w!' => \$options{wordmatch},
+  'help|h|?!' => \$options{help},
+  'verbose|v' => \$options{verbose},
+) or die help();
+
+
+if ($options{help}) {
+  print help() . "\n";
+  exit(0);
+}
+
+sub help {
+  return << 'HELPDOC';
+jsfind [options] <string>
+
+--projectBase <dir>
+--base <dir>
+-b <dir>                  The directory to start searching in.  Defaults to ~/git.
+
+--[no]tests
+-t                        Include/Don't include tests.  Defaults to false.
+
+--[no]javascript
+--[no]js                  Include/Don't include javascript files.  Defaults to true.
+
+--[no]php                 Include/Don't include php files.  Defaults to false.
+
+--[no]handlebars
+--[no]hb                  Include/Don't include handlebars files. Defaults to false.
+
+--[no]scss                Include/Don't include SASS files. Defaults to false.
+
+--[no]tml                 Include/Don't include tml files. Defaults to false.
+
+--[no]py
+--[no]python              Include/Don't include python files. Defaults to false.
+
+--[no]json                Include/Don't include json files. Defaults to false.
+
+--[no]find_function
+--[no]function
+--[no]ff                  When true, attempt to find the definition of the named function. Defaults to false.
+
+--[no]find_callers
+--[no]callers
+--[no]call
+--[no]fc                  When true, attempt to find callers of the named function.  Defaults to false.
+
+--[no]files_only
+--[no]files
+--[np]fi                  When true, find files which have the string in the name.  Defaults to false.
+
+--[no]wordmatch
+-w                        When true, only exact word matches are reported.  Defaults to false.
+
+HELPDOC
+
+}
+
+sub findem {
+  my ($namepattern) = @_;
+  my $rule = File::Find::Rule->new;
+  $rule->file;
+  $rule->not($rule->new->name(qr|^\.|));
+
+  my $counter = 0;
+
+  $rule->exec(
+    sub {
+      my ($filename, $dirname, $fullname) = @_;
+
+      if ($options{verbose} > 0) {
+          $counter++;
+
+          if ($counter % 10 > 0) {
+              print STDERR '.';
+          } elsif ($counter % 100 > 0) {
+              print STDERR '-';
+          } elsif ($counter % 1000 > 0) {
+              print STDERR '+';
+          } else {
+              print STDERR ':';
+          }
+      }
+
+      return 0 if $dirname =~ qr|\/node_modules\/|;
+      return 0 if $filename =~ qr|\.hb\.js|;
+      return 0 if $filename =~ qr|\.min\.|;
+      return 0 if (! $options{tests}) && $filename =~ qr|\.te?st\.|;
+      return 0 if (! $options{tests}) && $dirname =~ qr|\/te?sts?\/|;
+      return 1;
+    }
+  );
+  $rule->name($namepattern);
+
+  die "no project base" unless -e $options{projectBase};
+  my @files = $rule->in($options{projectBase});
+
+  if ($options{verbose} > 0) {
+      print STDERR "\n";
+  }
+
+  chomp(@files);
+  return @files;
+}
+
+sub search_file {
+  my ($file, $pattern) = @_;
+
+  $file =~ s/\s/\\ /g;
+  $file =~ s/\t/\\\t/g;
+  my @lines = `/bin/cat $file`;
+  chomp(@lines);
+
+  my $i;
+  my $emit = sub() {
+      printf("%s:%d: %s\n", $file, $i + 1, $lines[$i]);
+  };
+
+  for($i = 0; $i < scalar(@lines); $i++) {
+    if ($options{find_function}) {
+      if ($lines[$i] =~ qr|\W$pattern\s*\:\s*function\W|) {
+        $emit->();
+      } elsif ($lines[$i] =~ qr|\Wfunction\s+$pattern\W|) {
+        $emit->();
+      }
+    } elsif ($options{find_callers}) {
+      if ($lines[$i] =~ qr|\W$pattern\s*\:\s*function\W|) {
+        next;
+      } elsif ($lines[$i] =~ qr|\Wfunction\s+$pattern\W|) {
+        next;
+      } elsif ($lines[$i] =~ qr|[\n;\.\s]$pattern\s*\(|) {
+        $emit->();
+      } elsif ($lines[$i] =~ qr|::$pattern\s*\(| && $file =~ qr{\.php}) {
+        $emit->();
+      }
+    } elsif ($options{wordmatch}) {
+      if ($lines[$i] =~ qr|\W\Q$pattern\E\W|i) {
+        $emit->();
+      }
+    } elsif ($lines[$i] =~ qr|\Q$pattern\E|i) {
+      $emit->();
+    }
+  }
+}
+
+
+findem($options{name});
+
+my @files;
+
+@files = (@files, findem('*.js')) if $options{jsfiles};
+@files = (@files, findem('*.hb')) if $options{hbfiles};
+@files = (@files, findem('*.tml')) if $options{tmlfiles};
+@files = (@files, findem('*.scss')) if $options{scssfiles};
+@files = (@files, findem('*.php')) if $options{phpfiles};
+@files = (@files, findem('*.tml')) if $options{tmlfiles};
+@files = (@files, findem('*.py')) if $options{pythonfiles};
+@files = (@files, findem('*.json')) if $options{jsonfiles};
+
+my $counter = 0;
+
+foreach my $file (@files) {
+    if ($options{verbose} > 0) {
+      $counter++;
+
+      if ($counter % 10 > 0) {
+          print STDERR '.';
+      } elsif ($counter % 100 > 0) {
+          print STDERR '-';
+      } elsif ($counter % 1000 > 0) {
+          print STDERR '+';
+      } else {
+          print STDERR ':';
+      }
+  }
+
+  if ($options{files_only}) {
+      if ($file =~ qr|\Q$ARGV[0]\E|i) {
+      my @fl = `head -1 $file`;
+      my $fl = shift @fl;
+      chomp($fl);
+      print $file . ':1:   ' . $fl . "\n";
+    }
+  } else {
+    search_file($file, $ARGV[0]);
+  }
+}
+
+if ($options{verbose} > 0) {
+    print STDERR "\n";
+}

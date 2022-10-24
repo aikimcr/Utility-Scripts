@@ -1,0 +1,44 @@
+#! /usr/bin/perl
+
+use strict;
+use warnings;
+
+use Data::Dumper;
+use File::Find::Rule;
+use Getopt::Long;
+use File::Spec;
+
+my $home = $ENV{HOME};
+
+my ($basepath, $target, $replace) = @ARGV;
+
+sub findem {
+  my $rule = File::Find::Rule->new;
+  $rule->file;
+  $rule->not($rule->new->name(qr|^\.|));
+
+  $rule->exec(
+    sub {
+      my ($filename, $dirname, $fullname) = @_;
+
+      my $tmpfile = $filename . '.new';
+      open(my $infile, "$filename") || die "Unable to open $filename: $!";
+      open(my $outfile, ">$tmpfile") || die "UNable to open $tmpfile: $!";
+
+      while(<$infile>) {
+        $_ =~ s/\Q$target\E/$replace/g;
+        print $outfile $_;
+      }
+
+      close($outfile) || die "Unable to close $tmpfile: $!";
+      close($infile) || die "Unable to close $filename: $!";
+
+      unlink $filename || die "Unable to unlink $filename: $!";
+      rename $tmpfile, $filename || die "Unable to rename $tmpfile to $filename: $!";
+    }
+  );
+  $rule->name('*');
+  $rule->in($basepath);
+}
+
+findem();
